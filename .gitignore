@@ -1,0 +1,6 @@
+.env
+*.log
+.DS_Store
+Thumbs.db
+docx_temp/
+Bao_Cao_De_19_Website_Tin_Tuc_backup.docx

@@ -1,0 +1,155 @@
+version: '3.8'
+
+networks:
+  news_net:
+    driver: bridge
+
+volumes:
+  db_data:
+  wordpress_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+services:
+  # 1. MySQL Database
+  db:
+    image: mysql:8.0
+    container_name: news_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - news_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. phpMyAdmin
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: news_phpmyadmin
+    restart: always
+    environment:
+      PMA_HOST: db
+      UPLOAD_LIMIT: 64M
+    ports:
+      - "8081:80"
+    networks:
+      - news_net
+
+  # 3. WordPress (News Web Application)
+  wordpress:
+    image: wordpress:php8.2-fpm-alpine
+    container_name: news_app
+    restart: always
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_USER: ${DB_USER}
+      WORDPRESS_DB_PASSWORD: ${DB_PASSWORD}
+      WORDPRESS_DB_NAME: ${DB_NAME}
+    volumes:
+      - wordpress_data:/var/www/html
+    networks:
+      - news_net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 4. Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: news_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d
+      - wordpress_data:/var/www/html:ro
+    networks:
+      - news_net
+    depends_on:
+      - wordpress
+
+  # 5. Prometheus (Monitoring Metrics)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: news_prometheus
+    restart: always
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - news_net
+
+  # 6. cAdvisor (Container Metrics Exporter)
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: news_cadvisor
+    restart: always
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - news_net
+    privileged: true
+
+  # 7. Grafana (Dashboard)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: news_grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - news_net
+    depends_on:
+      - prometheus
+      - loki
+      - cadvisor
+
+  # 8. Loki (Log Aggregation)
+  loki:
+    image: grafana/loki:latest
+    container_name: news_loki
+    restart: always
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml
+      - loki_data:/tmp/loki
+    command: -config.file=/etc/loki/loki-config.yaml
+    networks:
+      - news_net
+
+  # 9. Promtail (Log Collector)
+  promtail:
+    image: grafana/promtail:latest
+    container_name: news_promtail
+    restart: always
+    volumes:
+      - ./docker/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    networks:
+      - news_net
